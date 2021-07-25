@@ -1,30 +1,29 @@
-# dict 结构定义
+# dict 
 ## 结构定义
-dict 结构定义如下
+如下：
 ```c
 // dict 结构
 typedef struct dict {
-    dictType *type; // dict 类型信息，在 server 启东时默认初始化为 dbDictType，具体信息见下文
+    dictType *type; // dict 类型信息，在 server 启东时默认初始化为 dbDictType
     void *privdata; //
     dictht ht[2];  // dict 哈希表结构，一般数据保存在 ht[0] 中，ht[1] 主要是在 rehash 过程中使用
-    long rehashidx; /* rehashing not in progress if rehashidx == -1 */
+    long rehashidx; // 在 rehashindex 为 -1 时，表示没有做 rehash；否则认为在 rehash 执行过程中
     int16_t pauserehash; /* If >0 rehashing is paused (<0 indicates coding error) */
 } dict;
 
 // dict hash table 
 typedef struct dictht {
-    dictEntry **table;
-    unsigned long size;
+    dictEntry **table; // 保存数据的 hash table
+    unsigned long size; // hash table 的大小；size 在 dictht 初始化的时候确定，不会随着数据插入增加
     unsigned long sizemask;
-    unsigned long used;
+    unsigned long used; // hash table 的 used，该值会比 size 大，因为一个 bucket 可能保存多组值；当 used/size > 5 时，会触发 rehash
 } dictht;
-
-// dictEntry hash 桶，保存 key-val 值
-// dictEntry key 为 dict 结构中 key 的值；v 为 value 的值，联合类型；next 通过拉链的方式解决 hash 冲突？
+// dictEntry bucket，保存 key-val 值
+// dictEntry key 为 dict 结构中 key 的值；v 为 value 的值，联合类型；next 通过拉链的方式解决 hash 冲突
 typedef struct dictEntry {
-    void *key;
+    void *key; // key 值
     union {
-        void *val;
+        void *val; // 结构是 redisObject？
         uint64_t u64;
         int64_t s64;
         double d;
@@ -33,7 +32,7 @@ typedef struct dictEntry {
 } dictEntry;
 ```
 ## dict 初始化
-在 server.c 中会对 dict 结构进行初始化
+在 server.c 中会对 dict 结构进行初始化    
 ```c
 void initServer(void) {
     ...
@@ -45,7 +44,7 @@ void initServer(void) {
     ...
 }
 ```
-dbDictType 结构定义如下
+dbDictType 结构定义如下    
 ```c
 /* Db->dict, keys are sds strings, vals are Redis objects. */
 dictType dbDictType = {
@@ -60,7 +59,7 @@ dictType dbDictType = {
 
 ```
 ## 写入数据
-dictCreate 创建一个新的 dict 结构
+dictCreate 创建一个新的 dict 结构    
 ```c
 dict *dictCreate(dictType *type,
         void *privDataPtr)
@@ -74,7 +73,7 @@ dict *dictCreate(dictType *type,
 int _dictInit(dict *d, dictType *type,
         void *privDataPtr)
 {
-    _dictReset(&d->ht[0]); // ht 初始化
+    _dictReset(&d->ht[0]); // ht 初始化为空
     _dictReset(&d->ht[1]);
     d->type = type; // server 启动时默认初始化为 dbDictType
     d->privdata = privDataPtr;
@@ -89,10 +88,10 @@ int _dictInit(dict *d, dictType *type,
 // dictSetVal 会把值写入 entry
 int dictAdd(dict *d, void *key, void *val)
 {
-    dictEntry *entry = dictAddRaw(d,key,NULL); // 
+    dictEntry *entry = dictAddRaw(d,key,NULL); // 创建 entry，此时 entry 中 key 值已经写入
 
     if (!entry) return DICT_ERR;
-    dictSetVal(d, entry, val);
+    dictSetVal(d, entry, val); // 写入 val
     return DICT_OK;
 }
 // dictAddRaw 先判断 key 是否存在，如果存在返回 null
@@ -118,17 +117,16 @@ dictEntry *dictAddRaw(dict *d, void *key, dictEntry **existing)
      * more frequently. */
     ht = dictIsRehashing(d) ? &d->ht[1] : &d->ht[0]; // 在 dictRehash 过程中，新创建的 key 写入新的 hash table 中
     entry = zmalloc(sizeof(*entry));
-    entry->next = ht->table[index];
+    entry->next = ht->table[index]; // 将 entry 插入链表头
     ht->table[index] = entry;
-    ht->used++;
+    ht->used++; // used++，此处注意，如果 ht->table[index] 这个 bucket 已经有值，增加一个值会更新 used，但是不会更新 size
 
     /* Set the hash entry fields. */
     dictSetKey(d, entry, key);
     return entry;
 }
 // _dictKeyIndex 搜索 key 的时候直接用 key&ht.sizemast 
-// 设计一种 hash 算法，该算法中出现了两个元素 hash 到了同一个桶里，通过拉链法解决；此时在查找时怎么判断是否是同一个元素呢？
-// 把原始数据的 key 或者基于另外一套算法生成的 key 放进去比较
+// 设计一种 hash 算法，该算法中出现了两个元素 hash 到了同一个桶里，通过拉链法解决    
 static long _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **existing)
 {
     unsigned long idx, table;
@@ -138,6 +136,7 @@ static long _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **e
     /* Expand the hash table if needed */
     if (_dictExpandIfNeeded(d) == DICT_ERR)
         return -1;
+    // 计算出 key 的 idx 并便利这个 bucket，搜索 key 是否已经存在
     for (table = 0; table <= 1; table++) {
         idx = hash & d->ht[table].sizemask;
         /* Search if this slot does not already contain the given key */
@@ -149,16 +148,17 @@ static long _dictKeyIndex(dict *d, const void *key, uint64_t hash, dictEntry **e
             }
             he = he->next;
         }
+        // 如果不是在 rehash 过程中，则只需要在在 ht[0] 中查找，不用在 ht[1] 中查找
         if (!dictIsRehashing(d)) break;
     }
     return idx;
 }
 ```
 ## dictRehash
-在 redis 认为 dict.ht.used > dict.ht.size 且 dict.ht.used/dict.ht.size > dict_force_resize_ratio 的时候，会触发 dict_expand；dict_expand 执行之后，会标记开始 rehash；
-dict_force_resize_ratio 值为 5
-在 rehash 过程中，redis 占用的内存空间会增加；增加的空间是当前 2 的整数倍
-代码如下：
+在 redis 认为 dict.ht.used > dict.ht.size 且 dict.ht.used/dict.ht.size > dict_force_resize_ratio 的时候，会触发 dict_expand；dict_expand 执行之后，会标记开始 rehash；    
+dict_force_resize_ratio 值为 5    
+在 rehash 过程中，redis 占用的内存空间会增加；增加的空间是当前 2 的整数倍    
+代码如下：    
 ```c
 // 判断是否需要执行 dictExpand
 static int _dictExpandIfNeeded(dict *d)
@@ -173,6 +173,7 @@ static int _dictExpandIfNeeded(dict *d)
      * table (global setting) or we should avoid it but the ratio between
      * elements/buckets is over the "safe" threshold, we resize doubling
      * the number of buckets. */
+    // dict_force_resize_ratio 值为 5
     if (d->ht[0].used >= d->ht[0].size &&
         (dict_can_resize ||
          d->ht[0].used/d->ht[0].size > dict_force_resize_ratio) &&
@@ -202,12 +203,14 @@ int _dictExpand(dict *d, unsigned long size, int* malloc_failed)
 {
     if (malloc_failed) *malloc_failed = 0;
 
-    /* the size is invalid if it is smaller than the number of
-     * elements already inside the hash table */
+    
+    // dictExpand 会触发 rehash，如果已经在 rehash 过程中，就不需要做 expand 操作
+    // expand 的目标 size 应该比当前 ht.used 要大
     if (dictIsRehashing(d) || d->ht[0].used > size)
         return DICT_ERR;
 
     dictht n; /* the new hash table */
+    // 计算新的 size 大小
     unsigned long realsize = _dictNextPower(size);
 
     /* Rehashing to the same table size is not useful. */
@@ -234,6 +237,7 @@ int _dictExpand(dict *d, unsigned long size, int* malloc_failed)
     }
 
     /* Prepare a second hash table for incremental rehashing */
+    // 记录已经在 rehash 过程中；之后新增的 entry 应该直接增加到 ht[1]
     d->ht[1] = n;
     d->rehashidx = 0;
     return DICT_OK;
@@ -245,7 +249,7 @@ static void _dictRehashStep(dict *d) {
     if (d->pauserehash == 0) dictRehash(d,1);
 }
 int dictRehash(dict *d, int n) {
-    int empty_visits = n*10; /* Max number of empty buckets to visit. */ // 这里值默认为 10 
+    int empty_visits = n*10; /* Max number of empty buckets to visit. */
     if (!dictIsRehashing(d)) return 0;
 
     while(n-- && d->ht[0].used != 0) {
@@ -264,7 +268,7 @@ int dictRehash(dict *d, int n) {
             uint64_t h;
 
             nextde = de->next;
-            /* Get the index in the new hash table */
+            // 将 ht[0] 中的数据插入到 ht[1] 中
             h = dictHashKey(d, de->key) & d->ht[1].sizemask;
             de->next = d->ht[1].table[h];
             d->ht[1].table[h] = de;
